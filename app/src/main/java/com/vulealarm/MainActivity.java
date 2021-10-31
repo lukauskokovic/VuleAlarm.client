@@ -9,24 +9,20 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.graphics.Color;
 import android.os.Bundle;
+import android.util.Log;
 import android.widget.TextView;
 import android.widget.Toast;
 
 public class MainActivity extends AppCompatActivity {
     VuleAlarmService ServiceInstance;
     Intent ServiceIntent;
-    TextView ConnectionStateLabel;
+    TextView ConnectionStateLabel, VrataStateLabel;
     BroadcastReceiver ConnectionStateReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            if(intent.hasExtra("STATE")){
-                System.out.println("Got state");
-                boolean value = intent.getBooleanExtra("STATE", false);
-                ChangeConnectionLabel(value);
-                //noinspection SpellCheckingInspection
-                if(!value)
-                    Toast.makeText(getApplicationContext(),"Nije se moglo povezati sa kucom.", Toast.LENGTH_LONG).show();
-            }
+            if(intent.hasExtra("STATE"))
+                ChangeConnectionLabel(intent.getBooleanExtra("STATE", false),
+                                      intent.getIntExtra("VRATA", 0));
         }
     };
     @Override
@@ -34,7 +30,8 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
         ConnectionStateLabel = (TextView)findViewById(R.id.saKucomLabel);
-        ChangeConnectionLabel(false);
+        VrataStateLabel = (TextView)findViewById(R.id.vrataLabel);
+        ChangeConnectionLabel(false, 0);
         ServiceInstance = new VuleAlarmService();
         ServiceIntent = new Intent(this, ServiceInstance.getClass());
         //
@@ -68,9 +65,23 @@ public class MainActivity extends AppCompatActivity {
         super.onDestroy();
     }
 
-    void ChangeConnectionLabel(boolean value){
+    void ChangeConnectionLabel(boolean value, int vrata){
         ConnectionStateLabel.setText(value? "POVEZAN" : "NEPOVEZAN");
         ConnectionStateLabel.setTextColor(value? Color.GREEN : Color.RED);
+        int color = Color.rgb(34, 5, 255);
+        String text = "NEPOZNATO";
+        if(vrata == 0){
+            color = Color.rgb(34, 5, 255);
+            text = "NEPOZNATO";
+        }else if(vrata == 1){
+            color = Color.RED;
+            text = "OTVORENA";
+        }else if(vrata == 2){
+            color = Color.GREEN;
+            text = "ZATVORENA";
+        }
+        VrataStateLabel.setTextColor(color);
+        VrataStateLabel.setText(text);
     }
 
     private boolean isMyServiceRunning(Class<?> serviceClass) {

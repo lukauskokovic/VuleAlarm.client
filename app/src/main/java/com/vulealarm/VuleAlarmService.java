@@ -19,24 +19,35 @@ import androidx.annotation.RequiresApi;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
 
+import org.json.JSONObject;
+
+import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 
 public class VuleAlarmService extends Service {
     Socket Socket = null;
     VuleAlarmService Instance;
     boolean Connected = false, Running = false;
+    int Vrata = 0;
     BroadcastReceiver ConnectionStateRequestReceiver;
     NotificationManagerCompat notificationManager;
+
+    final int ALERT_NOTIFICATION = 0,
+              NO_CONNECTION_NOTIFICATION = 1,
+              WRONG_BUFFER_NOTIFICATION = 2;
     public VuleAlarmService() {
         Instance = this;
         ConnectionStateRequestReceiver = new BroadcastReceiver() {
             @Override
             public void onReceive(Context context, Intent intent) {
-                SendConnectionStateBroadcast(Connected);
+                SendConnectionStateBroadcast(Connected, Vrata);
             }
         };
 
@@ -46,7 +57,7 @@ public class VuleAlarmService extends Service {
         super.onCreate();
         if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.O){
             startCustomForeground();
-        }else startForeground(2, new Notification());
+        }else startForeground(12, new Notification());
     }
     @RequiresApi(Build.VERSION_CODES.O)
     private void startCustomForeground(){
@@ -57,7 +68,6 @@ public class VuleAlarmService extends Service {
         chan.setLockscreenVisibility(Notification.VISIBILITY_SECRET);
 
         NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        assert manager != null;
         manager.createNotificationChannel(chan);
 
         NotificationCompat.Builder notificationBuilder = new NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID);
@@ -65,8 +75,9 @@ public class VuleAlarmService extends Service {
                 .setContentTitle("Vule alarm service")
                 .setPriority(NotificationManager.IMPORTANCE_DEFAULT)
                 .setCategory(Notification.CATEGORY_SERVICE)
+                .setWhen(System.currentTimeMillis())
                 .build();
-        startForeground(2, notification);
+        startForeground(12, notification);
     }
     @Override
     public int onStartCommand(Intent i, int flags, int startId){
@@ -83,13 +94,13 @@ public class VuleAlarmService extends Service {
             new Thread(this::ListenThread).start();
         return START_STICKY;
     }
-    void SendConnectionStateBroadcast(boolean state)
+    void SendConnectionStateBroadcast(boolean state, int vrata)
     {
         Connected = state;
-        Intent i = new Intent();
-        i.putExtra("STATE", state);
-        i.setAction("ConnectionState");
-        sendBroadcast(i);
+        Vrata = vrata;
+        sendBroadcast(new Intent().putExtra("STATE", state)
+                                  .putExtra("VRATA", vrata)
+                                  .setAction("ConnectionState"));
     }
     @Override
     public void onDestroy(){
@@ -98,7 +109,7 @@ public class VuleAlarmService extends Service {
             Running = false;
             Socket.close();
         }catch (Exception ignored){}
-        SendConnectionStateBroadcast(false);
+        SendConnectionStateBroadcast(false, 0);
         Intent broadcastIntent = new Intent();
         broadcastIntent.setAction("restartservice");
         broadcastIntent.setClass(this, ServiceRestarter.class);
@@ -111,36 +122,69 @@ public class VuleAlarmService extends Service {
         Socket = new Socket();
         InputStream inStream;
         int sleepTimer = 3000;
+        String Address;
+        int Port;
+        //Getting server ip and port
+        try{
+            URL url = new URL("https://jsonblob.com/api/903885772177031168");
+            HttpURLConnection conn = (HttpURLConnection)url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.connect();
+            InputStream stream = conn.getInputStream();
+            BufferedReader reader = new BufferedReader(new InputStreamReader(stream));
+            StringBuffer buffer = new StringBuffer();
+            String line = "";
+
+            while ((line = reader.readLine()) != null)
+                buffer.append(line+"\n");
+
+            JSONObject obj = new JSONObject(buffer.toString());
+            Port = obj.getInt("port");
+            Address = obj.getString("address");
+        }
+        catch (Exception ignored){
+            Log.i("Networking", "Failed to get json from api " + ignored);
+            Address = "192.168.0.17";
+            Port = 1300;
+            try{
+                Thread.sleep(2000);
+            }catch (Exception _ignored){}
+        }
+
         while(Running){
             try{
-                Socket.connect(new InetSocketAddress("192.168.0.17", 1421));
-                notificationManager.cancel(0);
+                Socket.connect(new InetSocketAddress(Address, Port));
+                notificationManager.cancel(NO_CONNECTION_NOTIFICATION);
                 //Get and send device name
                 Log.i("Networking", "Connected sending device name and starting listening for data");
                 Socket.getOutputStream().write(Settings.Global.getString(this.getContentResolver(), "device_name").getBytes(StandardCharsets.UTF_8));
-                SendConnectionStateBroadcast(true);
+                SendConnectionStateBroadcast(true, 0);
                 inStream = Socket.getInputStream();
                 long startTime = System.currentTimeMillis();
                 int timeout = 2000;
                 while(Connected){
                     try{
                         int available = inStream.available();
+                        //Timeout
                         if(available == 0 && (System.currentTimeMillis() - startTime) >= timeout){
                             Log.i("Networking", "Server failed to send keep alive");
-                            Notification("PREKINUTA VEZA", "NEMA VISE KONEKCIJE SA KUCOM", 0);
-                            SendConnectionStateBroadcast(false);
+                            Notification("PREKINUTA VEZA", "NEMA VISE KONEKCIJE SA KUCOM", NO_CONNECTION_NOTIFICATION);
+                            SendConnectionStateBroadcast(false, 0);
                         }
+                        //Has data
                         else if(available > 0){
-                            Log.i("Test", "read");
                             startTime = System.currentTimeMillis();
                             byte[] buffer = new byte[2];
                             int read = inStream.read(buffer);
-                            if(buffer[0] == 0)continue;
+                            if(buffer[0] == 0) {
+                                SendConnectionStateBroadcast(true, 2);
+                            }
                             else if(buffer[0] == 1){
-                                Notification("A NIJE ISLJLUCIO TIMER", "NEKO JE OTOVRIO VRATA", 1);
+                                Notification("A NIJE ISLJLUCIO TIMER", "NEKO JE OTOVRIO VRATA", ALERT_NOTIFICATION);
+                                SendConnectionStateBroadcast(true, 1);
                             }
                             if(read > 1){
-                                Notification("Kuca salje cudne podatke, moguci sum konekcije", "Reci ovo vuku", 2);
+                                Notification("Kuca salje cudne podatke, moguci sum konekcije", "Reci ovo vuku", WRONG_BUFFER_NOTIFICATION);
                                 Log.i("Networking", "Strange buffer");
                             }
                         }
@@ -150,13 +194,13 @@ public class VuleAlarmService extends Service {
                 }
                 Log.i("Networking", "Server disconnected trying again");
             }catch (IOException ex){
+                //Dont send everytime to avoid much toasts
                 if(Connected)
-                    SendConnectionStateBroadcast(false);
+                    SendConnectionStateBroadcast(false, 0);
 
                 Log.i("Networking", "Could not connect to server trying again in " + (sleepTimer/1000) + " seconds");
                 Socket = new Socket();
                 try {
-
                     Thread.sleep(sleepTimer);
                 } catch (Exception ignored) { }
             }
